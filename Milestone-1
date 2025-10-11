@@ -1,0 +1,188 @@
+#Extracting A Zip file
+import os
+FER_ZIP_NAME = 'fer-2013.zip.zip'
+UNZIP_DESTINATION = '/content/extracted_data'
+
+os.makedirs(UNZIP_DESTINATION, exist_ok=True)
+print(f"Destination created: {UNZIP_DESTINATION}")
+print(f"Attempting 'unzip' on {FER_ZIP_NAME}...")
+!unzip -o "{FER_ZIP_NAME}" -d "{UNZIP_DESTINATION}"
+print("\nExtraction Completed")
+
+# Checking that folder was created inside the destination
+!ls /content/extracted_data/
+
+import pandas as pd
+import numpy as np
+import os
+import zipfile
+import tensorflow as tf
+from tensorflow.keras.utils import image_dataset_from_directory
+
+FER_ZIP_PATH = 'fer-2013.zip.zip'
+MUSIC_ZIP_PATH = 'spotify_dataset.zip'
+UNZIP_DESTINATION = '/content/extracted_data'
+FER_BASE_DIR =  '/content/extracted_data/fer2013'
+MUSIC_CSV_IN_ZIP = 'spotify_tracks.csv'
+OUTPUT_DIR = 'preprocessed_data'
+
+
+if not os.path.exists(OUTPUT_DIR):
+    os.makedirs(OUTPUT_DIR)
+
+EMOTION_TO_MOOD_MAP = {
+    'happy': ['pop', 'dance', 'happy', 'party'],
+    'sad': ['acoustic', 'blues', 'sad', 'lo-fi'],
+    'neutral': ['ambient', 'chill', 'study', 'sleep'],
+    'angry': ['rock', 'metal', 'hardcore', 'grindcore'],
+    'fear': ['ambient', 'soundtracks', 'movies'],
+    'surprise': ['dance', 'j-dance', 'club', 'techno'],
+    'disgust': ['industrial', 'metal-misc', 'goth']
+}
+
+def unzip_fer_data(zip_path, destination):
+    """Unzips the FER-2013 data and returns the name of the final base folder."""
+    print(f"Starting extraction of {os.path.basename(zip_path)}...")
+
+    if not os.path.exists(zip_path):
+        print(f"ERROR: ZIP file not found at: {zip_path}. Did you upload it?")
+        return None
+    os.makedirs(destination, exist_ok=True)
+
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(destination)
+        print("Extracted successfully!!")
+
+
+        extracted_contents = os.listdir(destination)
+        if len(extracted_contents) == 1 and os.path.isdir(os.path.join(destination, extracted_contents[0])):
+            base_dir_name = extracted_contents[0]
+
+            return os.path.join(destination, base_dir_name)
+
+
+        elif any(name in extracted_contents for name in ['train', 'test', 'validation', 'val']):
+            return destination
+        else:
+            print("WARNING: Could not automatically determine base folder name.")
+            print(f"Contents found: {extracted_contents}")
+            return None
+
+    except Exception as e:
+        print(f"Error occurred during unzipping: {e}")
+        return None
+
+
+def preprocess_emotion_data(zip_path, unzip_dest, output_dir):
+    """
+    Handles the entire emotion data flow: unzip -> load images -> save numpy arrays.
+    """
+
+    fer_base_dir = unzip_fer_data(zip_path, unzip_dest)
+
+    if fer_base_dir is None:
+        print("file path error")
+        return
+
+    print(f"\nStarting to load emotion data : '{fer_base_dir}/'")
+
+
+    data_map = {'train': 'train', 'validation': 'val', 'test': 'test'}
+
+    for folder_name, output_prefix in data_map.items():
+        data_path = os.path.join(fer_base_dir, folder_name)
+
+        if not os.path.exists(data_path):
+            print(f" Data folder found")
+            continue
+
+        print(f"Loading {folder_name} data from '{data_path}'...")
+
+
+        dataset = image_dataset_from_directory(
+            data_path,
+            labels='inferred',
+            label_mode='categorical',
+            image_size=(48, 48),
+            color_mode='grayscale',
+            batch_size=None,
+            shuffle=False
+        )
+
+        X_data = np.concatenate(list(dataset.map(lambda x, y: x).as_numpy_iterator()))
+        y_data = np.concatenate(list(dataset.map(lambda x, y: y).as_numpy_iterator()))
+
+        # Pixel values (0-255 to 0.0-1.0)
+        X_data = X_data / 255.0
+
+
+        np.save(os.path.join(output_dir, f'X_{output_prefix}.npy'), X_data)
+        np.save(os.path.join(output_dir, f'y_{output_prefix}.npy'), y_data)
+        print(f"Saved {folder_name} data with shape X:{X_data.shape}, y:{y_data.shape}")
+
+    print("Emotion Data Preprocessing Completed Successfully!!")
+
+
+
+
+def load_csv_from_zip(zip_path, csv_in_zip):
+    """Loads a specific CSV file from a ZIP archive directly into a Pandas DataFrame."""
+    print(f"Attempting to load '{csv_in_zip}' from '{os.path.basename(zip_path)}'...")
+    if not os.path.exists(zip_path):
+        print(f" ZIP file not found at: {zip_path}.")
+        return None
+
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as z:
+            with z.open(csv_in_zip) as f:
+                df = pd.read_csv(f)
+                return df
+    except Exception as e:
+        print(f"Could not read CSV inside '{os.path.basename(zip_path)}'.Details: {e}")
+    return None
+
+def preprocess_music_data(zip_path, csv_in_zip, output_dir):
+    """Processes the Spotify dataset and creates the Mood_Tags."""
+    df = load_csv_from_zip(zip_path, csv_in_zip)
+    if df is None:
+        return
+
+
+    df = df[['name', 'artists', 'genre', 'popularity']]
+
+
+    df.dropna(inplace=True)
+    df.drop_duplicates(inplace=True)
+
+    print(f"Cleaned Spotify data size: {len(df)} tracks.")
+
+
+    mood_tags = []
+    all_mood_tags = {tag: list_ for list_ in EMOTION_TO_MOOD_MAP.values() for tag in list_}
+
+    for _, row in df.iterrows():
+        genre = str(row['genre']).lower()
+        tags = [tag for tag in all_mood_tags if tag in genre]
+        mood_tags.append(list(set(tags)))
+
+    df['Mood_Tags'] = mood_tags
+
+    df.to_csv(os.path.join(output_dir, 'preprocessed_music_data.csv'), index=False)
+    print(f"Music data preprocessed and saved as '{output_dir}/preprocessed_music_data.csv'.")
+    print("Music Data Preprocessing Completed Successfully!!")
+
+
+
+if __name__ == "__main__":
+
+    print(" Starting  Dataset Preparation ")
+    preprocess_emotion_data(FER_ZIP_PATH, UNZIP_DESTINATION, OUTPUT_DIR)
+
+    print("\n" + "="*50 + "\n")
+
+
+    preprocess_music_data(MUSIC_ZIP_PATH, MUSIC_CSV_IN_ZIP, OUTPUT_DIR)
+
+    print("\nPreprocessing Process Completed Successfully!!!")
+    print(f"Check the '{OUTPUT_DIR}' folder for your preprocessed files")
